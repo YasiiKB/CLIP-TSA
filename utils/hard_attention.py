@@ -43,6 +43,7 @@ class PerturbedTopKFunction(torch.autograd.Function):
         
         # b, # of samples, k, d
         perturbed_output = torch.nn.functional.one_hot(indices, num_classes=d).float()
+        # Average 
         indicators = perturbed_output.mean(dim=1) # b, k, d
 
         # constants for backward
@@ -61,12 +62,12 @@ class PerturbedTopKFunction(torch.autograd.Function):
         if grad_output is None:
             return tuple([ None ] * 5)
 
-        grad_expected = torch.einsum("bnkd,bne->bkde", ctx.perturbed_output, ctx.noise)
+        grad_expected = torch.einsum("bnkd,bne->bkde", ctx.perturbed_output, ctx.noise) # b, k, d, e are dimensions
         grad_expected /= (ctx.num_samples * ctx.sigma)
         grad_input = torch.einsum("bkde,bke->bd", grad_expected, grad_output)
         return (grad_input,) + tuple([ None ] * 5)
 
-
+# Temporal Scorer Network (Shallow, 3-layer NN: 512, 256, 1)
 class MLP(nn.Module):
     def __init__(self, input_dim=512):
         super(MLP, self).__init__()
@@ -89,6 +90,7 @@ class HardAttention(nn.Module):
         self.hard_att = PerturbedTopK(k=k, num_samples=num_samples)
 
     def forward(self, inputs):
+        # Temporal Scorer Network
         scores = self.scorer(inputs)
         b, t, d = scores.shape
 
@@ -97,8 +99,13 @@ class HardAttention(nn.Module):
         else:
             train_mode = False
 
+        # Top-k Score Nominator
         topk = self.hard_att(scores.squeeze(-1), train_mode)
+
+        # Fusion
         out = topk.unsqueeze(-1) * inputs.unsqueeze(1)
+        
+        # Sum
         out = torch.sum(out, dim=1)
 
         return out

@@ -15,6 +15,7 @@ def weight_init(m):
         if m.bias is not None:
             m.bias.data.fill_(0)
 
+# Shallow 3-layer NN: 512, 1024, 512
 class MLP(nn.Module):
     def __init__(self, input_dim=512):
         super(MLP, self).__init__()
@@ -32,19 +33,22 @@ class MLP(nn.Module):
         
 
 class _NonLocalBlockND(nn.Module):
+    '''
+    implementation of Non-local block for 1D, 2D and 3D CNN to capture long-range dependencies
+    '''
     def __init__(self, in_channels, inter_channels=None, dimension=3, sub_sample=True, bn_layer=True):
         super(_NonLocalBlockND, self).__init__()
 
         assert dimension in [1, 2, 3]
 
-        self.dimension = dimension
-        self.sub_sample = sub_sample
+        self.dimension = dimension # 1, 2 or 3 --> 1D, 2D or 3D CNN 
+        self.sub_sample = sub_sample # apply subsampling to reduce the spatial dimensions of the input
 
         self.in_channels = in_channels
         self.inter_channels = inter_channels
 
         if self.inter_channels is None:
-            self.inter_channels = in_channels // 2
+            self.inter_channels = in_channels // 2 # default number of inter_channels is half of in_channels
             if self.inter_channels == 0:
                 self.inter_channels = 1
 
@@ -64,7 +68,7 @@ class _NonLocalBlockND(nn.Module):
         self.g = conv_nd(in_channels=self.in_channels, out_channels=self.inter_channels,
                          kernel_size=1, stride=1, padding=0)
 
-        if bn_layer:
+        if bn_layer: # apply batch normalization to the output of the convolutional layer
             self.W = nn.Sequential(
                 conv_nd(in_channels=self.inter_channels, out_channels=self.in_channels,
                         kernel_size=1, stride=1, padding=0),
@@ -72,7 +76,8 @@ class _NonLocalBlockND(nn.Module):
             )
             nn.init.constant_(self.W[1].weight, 0)
             nn.init.constant_(self.W[1].bias, 0)
-        else:
+
+        else: # apply convolutional layer without batch normalization
             self.W = conv_nd(in_channels=self.inter_channels, out_channels=self.in_channels,
                              kernel_size=1, stride=1, padding=0)
             nn.init.constant_(self.W.weight, 0)
@@ -97,28 +102,28 @@ class _NonLocalBlockND(nn.Module):
 
         batch_size = x.size(0)
 
-        g_x = self.g(x).view(batch_size, self.inter_channels, -1)
+        g_x = self.g(x).view(batch_size, self.inter_channels, -1) # apply convolutional layer to x and reshape the output
         g_x = g_x.permute(0, 2, 1)
 
         theta_x = self.theta(x).view(batch_size, self.inter_channels, -1)
         theta_x = theta_x.permute(0, 2, 1)
         phi_x = self.phi(x).view(batch_size, self.inter_channels, -1)
 
-        f = torch.matmul(theta_x, phi_x)
-        N = f.size(-1)
-        f_div_C = f / N
+        f = torch.matmul(theta_x, phi_x) # matrix multiplication to compute the similarity between the features (long-range dependencies) in theta_x and phi_x
+        N = f.size(-1) # size of last dimension of f
+        f_div_C = f / N  # normalized matrix
 
-        y = torch.matmul(f_div_C, g_x)
+        y = torch.matmul(f_div_C, g_x) 
         y = y.permute(0, 2, 1).contiguous()
         y = y.view(batch_size, self.inter_channels, *x.size()[2:])
-        W_y = self.W(y)
-        z = W_y + x
+        W_y = self.W(y) # apply convolutional layer to y
+        z = W_y + x # sum of the original input (x) and the output of the convolutional layer (W_y)
 
         if return_nl_map:
             return z, f_div_C
         return z
 
-
+# Non-local block for 1D CNN (for easy instantiation)
 class NONLocalBlock1D(_NonLocalBlockND):
     def __init__(self, in_channels, inter_channels=None, sub_sample=True, bn_layer=True):
         super(NONLocalBlock1D, self).__init__(in_channels,
@@ -129,6 +134,10 @@ class NONLocalBlock1D(_NonLocalBlockND):
 
 
 class Aggregate(nn.Module):
+    '''
+    In Model class, Aggregate gets the features from Hard Attention and applies the following:
+    Dilated Convolution + Non-local block
+    '''
     def __init__(self, len_feature):
         super(Aggregate, self).__init__()
         bn = nn.BatchNorm1d
@@ -174,20 +183,22 @@ class Aggregate(nn.Module):
 
     def forward(self, x):
             # x: (B, T, F) -> torch.Size([10, 28, 2048])
-            out = x.permute(0, 2, 1) # -> torch.Size([10, 2048, 28])
+            out = x.permute(0, 2, 1) # -> torch.Size([10, 2048, 28]) rearrange the feature dimension
             residual = out
 
+            # Dilation Convolution
             out1 = self.conv_1(out)
             out2 = self.conv_2(out)
-
             out3 = self.conv_3(out)
             out_d = torch.cat((out1, out2, out3), dim = 1)
             out = self.conv_4(out)
+          
+            # Non-local block
             out = self.non_local(out)
             out = torch.cat((out_d, out), dim=1)
             out = self.conv_5(out)   # fuse all the features together
             out = out + residual
-            out = out.permute(0, 2, 1)
+            out = out.permute(0, 2, 1) # re-order the feature dimension
             # out: (B, T, 1)  => [10, 28, 2048]
 
             return out
@@ -199,7 +210,7 @@ class Model(nn.Module):
         OG_feat = n_features
         if args.visual.upper() in ["I3D", "C3D"]: # and args.enable_HA:            
             n_features = 512
-
+        
         self.hard_attention = HardAttention(k=k, num_samples=num_samples, input_dim=n_features)
         self.apply_HA = apply_HA
         self.batch_size = batch_size
@@ -234,9 +245,10 @@ class Model(nn.Module):
         out = out.view(-1, t, f) # => ^[640, 32, 2048]
 
         if f > 512:
-            out = self.mlp(out)
+            out = self.mlp(out) 
             f = 512
 
+        # Get the output of the hard attention module
         if self.apply_HA:
             if self.visual != "vit" and out.shape[0] > 1 and out.shape[1] != 32:
                 concat = []
@@ -246,21 +258,25 @@ class Model(nn.Module):
             else:
                 out = self.hard_attention(out)
 
+        # Apply Aggregation (Dilated Convolution + Non-local block)
         out = self.Aggregate(out) # ^[640, 32, 2048]
 
         out = self.drop_out(out) # => torch.Size([1, 89, 512]), ^[640, 32, 2048], *[64,32,512]
 
         features = out # torch.Size([1, 89, 512]), *[64,32,512]
+
+        # Calculate the scores
         scores = self.relu(self.fc1(features))
         scores = self.drop_out(scores)
         scores = self.relu(self.fc2(scores))
         scores = self.drop_out(scores)
         scores = self.sigmoid(self.fc3(scores))
+
         scores = scores.view(bs, ncrops, -1).mean(1) # => ^torch.Size([64, 32])
         scores = scores.unsqueeze(dim=2)    # => torch.Size([1, 89, 1]), ^[64,32,1], *[64, 32, 1]
 
         # Place self.hard_attention here and remove MLP inside hard attention
-        adjusted_scoremag_batch_size = int(self.batch_size * self.parallel)
+        adjusted_scoremag_batch_size = int(self.batch_size * self.parallel) # half the batch size if using 2 GPUs
         adjusted_feat_batch_size = int(self.batch_size*ncrops * self.parallel)
 
         normal_features = features[0:adjusted_feat_batch_size] # torch.Size([1, 89, 512]), ^[320, 32, 2048], *[64, 32, 512]
@@ -281,12 +297,12 @@ class Model(nn.Module):
             abnormal_features = normal_features # == torch.Size([1, 89, 512])
 
         #######  process abnormal videos -> select top3 feature magnitude  #######
-        select_idx = torch.ones_like(nfea_magnitudes).cuda()
-        select_idx = self.drop_out(select_idx)
+        select_idx = torch.ones_like(nfea_magnitudes).cuda() # initialize select_idx with ones
+        select_idx = self.drop_out(select_idx) # randomly drop out some features (sets random 1s to 3.333)
 
-        afea_magnitudes_drop = afea_magnitudes * select_idx
+        afea_magnitudes_drop = afea_magnitudes * select_idx # multiply the abnormal feature magnitudes with the dropout mask
 
-        idx_abn = torch.topk(afea_magnitudes_drop, k_abn, dim=1)[1]
+        idx_abn = torch.topk(afea_magnitudes_drop, k_abn, dim=1)[1] # get the indices of the top 3 abnormal feature magnitudes
 
         idx_abn_feat = idx_abn.unsqueeze(2).expand([-1, -1, abnormal_features.shape[2]]) # => torch.Size([1, 3, 512]), ^[32, 3, 2048], +[32, 3, 512]
         abnormal_features = abnormal_features.view(n_size, ncrops, t, f) # => torch.Size([1, 1, 197, 512]), ^[32, 10, 32, 2048], +[1,32,32,512]
@@ -318,7 +334,7 @@ class Model(nn.Module):
             total_select_nor_feature = torch.cat((total_select_nor_feature, feat_select_normal))
 
         idx_normal_score = idx_normal.unsqueeze(2).expand([-1, -1, normal_scores.shape[2]])
-        score_normal = torch.mean(torch.gather(normal_scores, 1, idx_normal_score), dim=1) # top 3 scores in normal bag
+        score_normal = torch.mean(torch.gather(normal_scores, 1, idx_normal_score), dim=1) # top 3 scores in normal bag 
 
         feat_select_abn = total_select_abn_feature
         feat_select_normal = total_select_nor_feature

@@ -86,7 +86,20 @@ class Dataset(data.Dataset):
                     # print(self.list)
 
     def __getitem__(self, index):
+
+        # list of video paths from self.list in _parse_list method
         path = self.list[index].strip('\n')
+        # print("before:",path)
+        # print("before:",type(path))
+
+        # split path by / and remove the first 4 elements
+        path = path.split('/')[5:]
+
+        # join the elements of the list
+        path = '/'.join(path)
+
+        # print("after:",path)
+        # print("after:",type(path))
 
         label = self.get_label()  # get video level label 0/1
 

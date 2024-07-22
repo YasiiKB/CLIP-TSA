@@ -105,9 +105,12 @@ if __name__ == '__main__':
 
     feature_size = train_aloader.dataset[0][0].shape[-1]
 
+    # traning from scratch (no checkpoints)
     if args.pretrained_ckpt is None:
+        # define model
         model = Model(feature_size, args.batch_size, args.k, args.num_samples, args.enable_HA, args)
 
+        # multi-gpu
         if "," in args.gpu:
             model = torch.nn.DataParallel(model, device_ids=[int(f) for f in args.gpu.split(",")])
 
@@ -123,6 +126,8 @@ if __name__ == '__main__':
 
         test_info = { "epoch": [], "test_AUC": [], "best_test_AUC": [] }
         best_AUC = -1
+        
+    # inference mode
     else:
         print("[NOTE] For inference, you must specify: --dataset, --gpu, --k, --seed")
         model = Model(feature_size, args.batch_size, args.k, args.num_samples, args.enable_HA)

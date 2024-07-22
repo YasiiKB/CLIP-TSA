@@ -2,17 +2,21 @@ import numpy as np
 import torch
 
 def process_feat(feat, length):
-    if type(feat) == torch.Tensor:
+    '''
+    process a feature tensor or array (feat) and return a new feature tensor or array with a specified length (length).
+    used in __getitem__ method of the dataset class to divide a video into (32) segments.
+    '''
+    if type(feat) == torch.Tensor: # Tensor
         new_feat = torch.zeros((length, feat.shape[1])).type(torch.float32)
         
         r = torch.linspace(0, len(feat), length+1, dtype=torch.int)
         for i in range(length):
-            if r[i]!=r[i+1]:
-                new_feat[i,:] = torch.mean(feat[r[i]:r[i+1],:], 0)
+            if r[i]!=r[i+1]: # if the segment contains more than one frame
+                new_feat[i,:] = torch.mean(feat[r[i]:r[i+1],:], 0) # average the frames in the segment
             else:
-                new_feat[i,:] = feat[r[i],:]
+                new_feat[i,:] = feat[r[i],:] # if the segment contains only one frame, use the frame
         return new_feat
-    else:
+    else: # Numpy array
         new_feat = np.zeros((length, feat.shape[1])).astype(np.float32)
         
         r = np.linspace(0, len(feat), length+1, dtype=np.int)
